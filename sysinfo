@@ -1,0 +1,116 @@
+#!/bin/bash
+#sudo nano /usr/local/bin/sysinfo
+#export http_proxy="IPv4:8080" && sudo -E apt install input
+
+echo "========== CHECKING DEPENDENCIES =========="
+
+REQUIRED_CMDS="inxi smartctl sensors"
+PKG_NAMES="inxi smartmontools lm-sensors"
+
+install_package() {
+    local pkg_name=$1
+    echo "Attempting to install: $pkg_name..."
+
+    if command -v apt-get &> /dev/null; then
+        # Debian, Ubuntu, Mint
+        sudo apt-get update -qq && sudo apt-get install -y -qq "$pkg_name"
+	elif command -v dnf &> /dev/null; then
+        # Fedora, Rocky, Alma, RHEL 8/9+
+        if ! rpm -qa | grep -qw epel-release; then
+             echo "Enabling EPEL repository..."
+             sudo dnf install -y -q epel-release
+        fi
+        local dnf_pkg="$pkg_name"
+        [ "$pkg_name" = "lm-sensors" ] && dnf_pkg="lm_sensors"
+        sudo dnf install -y -q "$dnf_pkg"
+        
+    elif command -v yum &> /dev/null; then
+        # RHEL 7 and older CentOS
+        sudo yum install -y -q "$pkg_name"
+    elif command -v pacman &> /dev/null; then
+        # Arch Linux, Manjaro
+        local arch_pkg="$pkg_name"
+        [ "$pkg_name" = "lm-sensors" ] && arch_pkg="lm_sensors"
+        sudo pacman -Sy --noconfirm "$arch_pkg"
+    elif command -v zypper &> /dev/null; then
+        # openSUSE
+        sudo zypper install -y -q "$pkg_name"
+    elif command -v apk &> /dev/null; then
+        # Alpine Linux (بسیار رایج در داکر)
+        sudo apk add --quiet "$pkg_name"
+    else
+        echo "Error: No supported package manager found. Please install '$pkg_name' manually."
+    fi
+}
+
+for cmd in $REQUIRED_CMDS; do
+    if ! command -v "$cmd" &> /dev/null; then
+        echo "Missing required tool: $cmd"
+        
+        case "$cmd" in
+            smartctl) install_package "smartmontools" ;;
+            sensors)  install_package "lm-sensors" ;;
+            *)        install_package "$cmd" ;;
+        esac
+    fi
+done
+
+echo "Dependencies check complete."
+
+echo "========== SYSTEM INFO =========="
+inxi -F
+
+echo -e "\n========== CPU MICROARCHITECTURE =========="
+if [ -f /lib64/ld-linux-x86-64.so.2 ]; then
+    /lib64/ld-linux-x86-64.so.2 --help | grep "x86-64-v" | awk '{if ($2 ~ /supported/) print "[ ✓ ] " $1 " (Supported)"; else print "[ ✗ ] " $1 " (Not Supported)"}'
+else
+    echo "ld-linux-x86-64.so.2 not found."
+fi
+
+echo -e "\n========== MEMORY =========="
+free -h
+
+echo -e "\n========== HOST INFO =========="
+hostnamectl
+
+echo -e "\n========== DISK PARTITIONS =========="
+sudo parted /dev/sda print | grep -E "Number|^[[:space:]]*[0-9]"
+
+echo -e "\n========== BOOT MODE =========="
+[ -d /sys/firmware/efi ] && echo "UEFI Mode" || echo "Legacy/BIOS Mode"
+
+echo -e "\n========== WINDOWS =========="
+sudo os-prober
+
+echo -e "\n========== FREE SPACE =========="
+df -h | grep -E "Filesystem|/dev/(sda|nvme)"
+
+echo -e "\n========== BATTERY HEALTH =========="
+BATTERY=$(upower -e 2>/dev/null | grep 'BAT' | head -n 1)
+if [ -n "$BATTERY" ]; then
+    upower -i $BATTERY | grep -E "vendor|model|state|percentage|capacity|energy-full"
+else
+    echo "No battery detected or upower is not installed."
+fi
+
+echo -e "\n========== DISK HEALTH (SMART) =========="
+if command -v smartctl &> /dev/null; then
+    for disk in /dev/sda /dev/nvme0n1; do
+        if [ -b "$disk" ]; then
+            echo "--- SMART info for $disk ---"
+            sudo smartctl -H -A $disk | grep -iE "test result|power_on_hours|wear|reallocated|percentage_used"
+        fi
+    done
+else
+    echo "smartmontools not installed. (Run: sudo apt install smartmontools)"
+fi
+
+echo -e "\n========== THERMAL SENSORS =========="
+if command -v sensors &> /dev/null; then
+    sensors | grep -iE "Core|temp"
+else
+    echo "lm-sensors not installed. (Run: sudo apt install lm-sensors)"
+fi
+
+echo -e "\n========== CONNECTED USB & DEVICES =========="
+lsusb
